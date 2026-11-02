@@ -19,13 +19,18 @@ So limit who the token belongs to instead, and **don't use an admin's token**:
 2. Log in as it, then under Settings → Applications generate a token with:
    - organization: read and write
    - repository: read and write
-3. Run `./forgejo-mirrors.py` once, it copies `config.toml.example` to `~/.config/forgejo-mirrors/config.toml` and exits.
-4. Save the token in your keyring, this works with anything that provides Secret Service, e.g. KeePassXC, GNOME Keyring or KWallet:
+3. From the repo, link the script into your `PATH`:
    ```sh
-   secret-tool store --label='forgejo-mirrors git.nnstdios.com' service forgejo-mirrors host git.nnstdios.com
+   mkdir -p ~/.local/bin
+   ln -s "$PWD/declarative-forgejo-mirrors.py" ~/.local/bin/declarative-forgejo-mirrors
+   ```
+4. Run `declarative-forgejo-mirrors` once, it copies `config.toml.example` to `~/.config/declarative-forgejo-mirrors/config.toml` and exits.
+5. Save the token in your keyring, this works with anything that provides Secret Service, e.g. KeePassXC, GNOME Keyring or KWallet:
+   ```sh
+   secret-tool store --label='declarative-forgejo-mirrors git.nnstdios.com' service declarative-forgejo-mirrors host git.nnstdios.com
    ```
 
-Without a keyring, e.g. on a headless server, the token is read from `~/.local/share/forgejo-mirrors/tokens/<server>` instead, which has to be `chmod 600`.
+Without a keyring, e.g. on a headless server, the token is read from `~/.local/share/declarative-forgejo-mirrors/tokens/<server>` instead, which has to be `chmod 600`.
 
 If that token leaks, the worst it can do is delete or tamper with the bot's own orgs and mirrors, and create junk orgs and repos.\
 It can't touch other users or their repos. Revoke it and re-run the script, which restores anything deleted.
@@ -48,8 +53,8 @@ Plain git servers have no owners, so their repos need an `org`, which also works
 Avatars are only copied when `org` isn't set, and the bot must be an owner of that org.
 
 ```sh
-./forgejo-mirrors.py --dry-run
-./forgejo-mirrors.py
+declarative-forgejo-mirrors --dry-run
+declarative-forgejo-mirrors
 ```
 
 Existing repos are skipped, so re-running only picks up new ones and refreshes org avatars, and nothing is ever deleted.\
