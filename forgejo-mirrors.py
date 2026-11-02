@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from urllib.request import Request, urlopen
 
 NAME = "forgejo-mirrors"
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / NAME / "config.toml"
+EXAMPLE = Path(__file__).resolve().with_name("config.toml.example")
 TOKENS = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / NAME / "tokens"
 SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 
@@ -275,6 +277,14 @@ def parse_item(item):
 
 
 def load_config(path):
+    if not path.exists():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(EXAMPLE, path)
+        except OSError as error:
+            die(f"can't create config: {error}")
+        sys.exit(f"created {path}, add your mirrors to it and run again")
+
     try:
         with open(path, "rb") as file:
             config = tomllib.load(file)

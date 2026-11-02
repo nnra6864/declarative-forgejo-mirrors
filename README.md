@@ -19,10 +19,7 @@ So limit who the token belongs to instead, and **don't use an admin's token**:
 2. Log in as it, then under Settings → Applications generate a token with:
    - organization: read and write
    - repository: read and write
-3. Save the config:
-   ```sh
-   install -Dm644 config.toml.example ~/.config/forgejo-mirrors/config.toml
-   ```
+3. Run `./forgejo-mirrors.py` once, it copies `config.toml.example` to `~/.config/forgejo-mirrors/config.toml` and exits.
 4. Save the token in your keyring, this works with anything that provides Secret Service, e.g. KeePassXC, GNOME Keyring or KWallet:
    ```sh
    secret-tool store --label='forgejo-mirrors git.nnstdios.com' service forgejo-mirrors host git.nnstdios.com
