@@ -58,7 +58,9 @@ declarative-forgejo-mirrors --dry-run
 declarative-forgejo-mirrors
 ```
 
-Existing repos are skipped, so re-running only picks up new ones and refreshes org avatars, and nothing is ever deleted.\
+Existing repos are skipped, so re-running only picks up new ones, and nothing is ever deleted.\
+Single repo URLs that are already mirrored are checked against your server only, without contacting the source.\
+Avatars are only uploaded when an org is created, pass `--avatars` to refresh them for existing orgs too.\
 To move servers, change the header, save a token for it and run it again.
 
 ### Limitations

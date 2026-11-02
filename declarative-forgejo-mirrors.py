@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+import hashlib
 import html
 import json
 import os
@@ -24,6 +25,7 @@ TOKENS = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") /
 SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 CGIT_REPO = re.compile(r"<td class='(?:sub|top)level-repo'><a [^>]*?href='([^']+)'.*?</td><td><a [^>]*>(.*?)</a>", re.S)
 CGIT_LOGO = re.compile(r"<td class='logo'.*?<img src='([^']+)'", re.S)
+CGIT_STOCK_LOGO = "db2b9d874e71b03f02d1fef2f6786bec0721a4992653a0eb0766ec8691537bb2"
 
 failed = False
 
@@ -130,7 +132,7 @@ def cgit_repos(url):
             break
         count = len(repos)
         logo = CGIT_LOGO.search(page)
-        avatar_url = urljoin(f"{url}/", html.unescape(logo[1])) if logo and not logo[1].endswith("/cgit.png") else ""
+        avatar_url = urljoin(f"{url}/", html.unescape(logo[1])) if logo else ""
         for href, description in CGIT_REPO.findall(page):
             clone_url = urljoin(f"{url}/", html.unescape(href)).rstrip("/")
             name = clone_url.rsplit("/", 1)[-1].removesuffix(".git")
@@ -221,11 +223,13 @@ def split_url(url):
 
 
 class Forgejo:
-    def __init__(self, url, token, dry_run):
+    def __init__(self, url, token, dry_run, avatars):
         self.api = f"{url}/api/v1"
         self.token = token
         self.dry_run = dry_run
+        self.avatars = avatars
         self.orgs = {}
+        self.repos = {}
 
     def call(self, method, path, body=None):
         status, data = request(method, f"{self.api}{path}", body, {"Authorization": f"token {self.token}"})
@@ -233,9 +237,32 @@ class Forgejo:
             die(f"{self.api} rejected the token: {error_text(data)}")
         return status, data
 
-    def ensure_org(self, org):
+    def existing(self, org):
+        org = org.lower()
+        if org not in self.repos:
+            self.repos[org] = set()
+            page = 1
+            while True:
+                status, body = self.call("GET", f"/orgs/{org}/repos?limit=50&page={page}")
+                if status == 404:
+                    break
+                if status != 200:
+                    fail(f"listing repos of {org} (HTTP {status}): {error_text(body)}")
+                    break
+                if not (batch := json.loads(body)):
+                    break
+                self.repos[org].update(repo["name"].lower() for repo in batch)
+                page += 1
+        return self.repos[org]
+
+    def has(self, owner, name):
+        return name.lower() in self.existing(owner)
+
+    def ensure_org(self, org, avatar_url):
         status, body = self.call("GET", f"/orgs/{org}")
         if status == 200:
+            if self.avatars:
+                self.sync_avatar(org, avatar_url)
             return True
         if status != 404:
             fail(f"looking up {org} (HTTP {status}): {error_text(body)}")
@@ -248,6 +275,7 @@ class Forgejo:
             fail(f"creating org {org} (HTTP {status}): {error_text(body)}")
             return False
         print(f"created org {org}")
+        self.sync_avatar(org, avatar_url)
         return True
 
     def sync_avatar(self, org, url):
@@ -257,23 +285,24 @@ class Forgejo:
         if status != 200:
             fail(f"fetching avatar of {org} (HTTP {status})")
             return
+        # sites often replace cgit.png with their own logo, so only the stock one is skipped
+        if hashlib.sha256(image).hexdigest() == CGIT_STOCK_LOGO:
+            return
         status, body = self.call("POST", f"/orgs/{org}/avatar", {"image": base64.b64encode(image).decode()})
         if status != 204:
             fail(f"setting avatar of {org} (HTTP {status}): {error_text(body)}")
 
     def sync_org(self, repo):
         if repo.owner not in self.orgs:
-            self.orgs[repo.owner] = self.ensure_org(repo.owner)
-            if self.orgs[repo.owner]:
-                self.sync_avatar(repo.owner, repo.avatar_url)
+            self.orgs[repo.owner] = self.ensure_org(repo.owner, repo.avatar_url)
         return self.orgs[repo.owner]
 
     def mirror(self, repo):
         full_name = f"{repo.owner}/{repo.name}"
-        if self.call("GET", f"/repos/{full_name}")[0] == 200:
-            print(f"skip  {full_name} (exists)")
+        if self.has(repo.owner, repo.name):
             return
         if self.dry_run:
+            self.existing(repo.owner).add(repo.name.lower())
             print(f"would mirror {full_name}")
             return
         status, body = self.call("POST", "/repos/migrate", {
@@ -288,8 +317,9 @@ class Forgejo:
             "private": False,
         })
         if status == 201:
+            self.existing(repo.owner).add(repo.name.lower())
             print(f"ok    {full_name}")
-        else:
+        elif status != 409:
             fail(f"{full_name} (HTTP {status}): {error_text(body)}")
 
 
@@ -353,6 +383,7 @@ def main():
     parser = argparse.ArgumentParser(description="Mirror GitHub, GitLab and Forgejo repos into Forgejo orgs.")
     parser.add_argument("config", nargs="?", type=Path, default=CONFIG)
     parser.add_argument("-n", "--dry-run", action="store_true")
+    parser.add_argument("--avatars", action="store_true", help="re-upload avatars of existing orgs")
     args = parser.parse_args()
 
     servers = load_config(args.config)
@@ -360,8 +391,11 @@ def main():
 
     for url, items in servers.items():
         print(f"== {url}")
-        forgejo = Forgejo(url, tokens[url], args.dry_run)
+        forgejo = Forgejo(url, tokens[url], args.dry_run, args.avatars)
         for (origin, path), forks, org in items:
+            # owner/repo urls name their target, so existing mirrors never touch the source
+            if len(path) == 2 and not args.avatars and forgejo.has(org or path[0], path[1]):
+                continue
             try:
                 repos = fetch_repos(origin, path, forks)
             except SourceError as error:
