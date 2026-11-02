@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import base64
-import hashlib
 import html
 import json
 import os
@@ -25,7 +24,6 @@ TOKENS = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") /
 SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 CGIT_REPO = re.compile(r"<td class='(?:sub|top)level-repo'><a [^>]*?href='([^']+)'.*?</td><td><a [^>]*>(.*?)</a>", re.S)
 CGIT_LOGO = re.compile(r"<td class='logo'.*?<img src='([^']+)'", re.S)
-CGIT_STOCK_LOGO = "db2b9d874e71b03f02d1fef2f6786bec0721a4992653a0eb0766ec8691537bb2"
 
 failed = False
 
@@ -284,9 +282,6 @@ class Forgejo:
         status, image = request("GET", url)
         if status != 200:
             fail(f"fetching avatar of {org} (HTTP {status})")
-            return
-        # sites often replace cgit.png with their own logo, so only the stock one is skipped
-        if hashlib.sha256(image).hexdigest() == CGIT_STOCK_LOGO:
             return
         status, body = self.call("POST", f"/orgs/{org}/avatar", {"image": base64.b64encode(image).decode()})
         if status != 204:
