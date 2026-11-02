@@ -4,7 +4,7 @@
 > This was made with Claude.<br>
 > It's made for personal use only, so don't expect any kind of support.
 
-Utility script for mirroring repos and entire users/organizations from most Git platforms to Forgejo.
+Utility script for declaratively mirroring repos and entire users/organizations from most Git platforms to Forgejo.
 
 Everything is mirrored into a Forgejo org named after the source owner, so `owner/repo` is the same path on both servers and relative submodule URLs like `../../owner/repo` work on either.
 
