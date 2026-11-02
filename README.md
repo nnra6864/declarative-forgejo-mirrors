@@ -46,11 +46,12 @@ mirrors = [
   "https://gitlab.com/owner",
   { url = "https://codeberg.org/owner", forks = false },
   { url = "https://git.example.com/repo", org = "my-mirrors" },
+  { url = "https://cgit.example.com", org = "my-mirrors" },
 ]
 ```
 
 Plain git servers have no owners, so their repos need an `org`, which also works on any other URL to override the target org.\
-Avatars are only copied when `org` isn't set, and the bot must be an owner of that org.
+Avatars are only copied when `org` isn't set, or when the source has no owners, like a cgit logo, and the bot must be an owner of that org.
 
 ```sh
 declarative-forgejo-mirrors --dry-run
@@ -63,7 +64,7 @@ To move servers, change the header, save a token for it and run it again.
 ### Limitations
 
 - Headers need quotes, otherwise TOML treats the dots as nesting.
-- Plain git servers can only mirror single repos, since there's no way to list them.
+- Plain git servers can only mirror single repos, since there's no way to list them, except cgit, whose index page lists them all.
 - An owner can't be mirrored if that name is already a Forgejo user, and the bot must be an owner of any org that already exists.
 - Same-named owners on different sources share an org, and if a repo name is taken the later one is skipped.
 - GitLab subgroups are flattened, `group/sub/repo` becomes `group/sub-repo`, so relative URLs won't work for those.

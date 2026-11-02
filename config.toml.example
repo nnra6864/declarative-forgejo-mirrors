@@ -4,4 +4,5 @@ mirrors = [
   # "https://gitlab.com/owner",                      # everything they own
   # { url = "https://codeberg.org/owner", forks = false },  # everything except forks
   # { url = "https://git.example.com/repo", org = "my-mirrors" },  # server without owners
+  # { url = "https://cgit.example.com", org = "my-mirrors" },  # every repo on a cgit index
 ]

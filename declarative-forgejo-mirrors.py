@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+import html
 import json
 import os
 import re
@@ -21,6 +22,8 @@ CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / NA
 EXAMPLE = Path(__file__).resolve().with_name("config.toml.example")
 TOKENS = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / NAME / "tokens"
 SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
+CGIT_REPO = re.compile(r"<td class='(?:sub|top)level-repo'><a [^>]*?href='([^']+)'.*?</td><td><a [^>]*>(.*?)</a>", re.S)
+CGIT_LOGO = re.compile(r"<td class='logo'.*?<img src='([^']+)'", re.S)
 
 failed = False
 
@@ -118,12 +121,33 @@ def forgejo_repos(origin, path):
     return forge_repos(f"{origin}/api/v1", path)
 
 
+def cgit_repos(url):
+    repos = {}
+    while True:
+        status, body = request("GET", f"{url}/?ofs={len(repos)}")
+        page = body.decode(errors="replace")
+        if status != 200 or "content='cgit" not in page:
+            break
+        count = len(repos)
+        logo = CGIT_LOGO.search(page)
+        avatar_url = urljoin(f"{url}/", html.unescape(logo[1])) if logo and not logo[1].endswith("/cgit.png") else ""
+        for href, description in CGIT_REPO.findall(page):
+            clone_url = urljoin(f"{url}/", html.unescape(href)).rstrip("/")
+            name = clone_url.rsplit("/", 1)[-1].removesuffix(".git")
+            repos[clone_url] = Repo("", name, clone_url, html.unescape(description).strip(), avatar_url, False)
+        if len(repos) == count:
+            break
+    return list(repos.values())
+
+
 def plain_repos(origin, path):
-    url = f"{origin}/{'/'.join(path)}"
-    for clone_url in (url, f"{url}.git"):
+    url = "/".join((origin, *path))
+    for clone_url in (url, f"{url}.git") if path else ():
         if request("GET", f"{clone_url}/info/refs?service=git-upload-pack")[0] == 200:
             return [Repo(path[0] if len(path) == 2 else "", path[-1], clone_url, "", "", False)]
-    raise SourceError(f"{url} isn't a git repo")
+    if repos := cgit_repos(url):
+        return repos
+    raise SourceError(f"{url} isn't a git repo or cgit index")
 
 
 @cache
@@ -180,6 +204,8 @@ def detect_source(origin):
 @cache
 def fetch_repos(origin, path, forks):
     source = detect_source(origin)
+    if not path and source is not plain_repos:
+        raise SourceError(f"{origin} needs an owner or repo in the url")
     if source is gitlab_repos and not forks:
         raise SourceError(f"{origin} doesn't reveal forks without a token, remove forks = false")
     return [repo for repo in source(origin, path) if forks or not repo.fork]
@@ -187,10 +213,11 @@ def fetch_repos(origin, path, forks):
 
 def split_url(url):
     parts = urlsplit(url if "://" in url else f"https://{url}")
-    path = parts.path.strip("/").removesuffix(".git").split("/")
+    path = parts.path.strip("/").removesuffix(".git")
+    path = tuple(path.split("/")) if path else ()
     if parts.scheme not in ("https", "http") or not parts.netloc or not all(map(SEGMENT.fullmatch, path)):
         die(f"bad url: {url}")
-    return f"{parts.scheme}://{parts.netloc}", tuple(path)
+    return f"{parts.scheme}://{parts.netloc}", path
 
 
 class Forgejo:
@@ -344,7 +371,7 @@ def main():
                 print(f"skip  {origin}/{'/'.join(path)} (no public repos)")
             for repo in repos:
                 if org:
-                    repo = repo._replace(owner=org, avatar_url="")
+                    repo = repo._replace(owner=org, avatar_url=repo.avatar_url if not repo.owner else "")
                 if not repo.owner:
                     fail(f"{repo.clone_url} has no owner, set org")
                 elif forgejo.sync_org(repo):
