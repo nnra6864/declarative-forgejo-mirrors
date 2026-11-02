@@ -1,0 +1,7 @@
+["git.nnstdios.com"]
+mirrors = [
+  # "https://github.com/owner/repo",                 # one repo
+  # "https://gitlab.com/owner",                      # everything they own
+  # { url = "https://codeberg.org/owner", forks = false },  # everything except forks
+  # { url = "https://git.example.com/repo", org = "my-mirrors" },  # server without owners
+]
