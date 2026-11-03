@@ -78,7 +78,7 @@ To move servers, change the header, save a token for it and run it again.
 - GitHub allows 60 unauthenticated requests per hour.
 - GitLab rate limits unauthenticated requests hard, especially for user URLs, so those can fail with HTTP 429 for a while. Group and repo URLs are more reliable.
 - `forks = false` doesn't work on GitLab, which doesn't reveal forks without a token.
-- `name` and `interval` only apply when a mirror is created, change existing ones in the repo settings.
+- `name` only applies when a mirror is created, while `interval` is also updated on existing mirrors, but removing it leaves the current one as is.
 - Each repo has to finish cloning before the next starts, so a reverse proxy timeout can show up as `FAIL`.
 
 # ☦

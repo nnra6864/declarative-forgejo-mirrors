@@ -257,7 +257,8 @@ class Forgejo:
     def existing(self, org):
         org = org.lower()
         if org not in self.repos:
-            self.repos[org] = set()
+            # lowercased name -> mirror interval, None for repos that aren't mirrors
+            self.repos[org] = {}
             page = 1
             while True:
                 status, body = self.call("GET", f"/orgs/{org}/repos?limit=50&page={page}")
@@ -268,12 +269,29 @@ class Forgejo:
                     break
                 if not (batch := json.loads(body)):
                     break
-                self.repos[org].update(repo["name"].lower() for repo in batch)
+                self.repos[org].update(
+                    (repo["name"].lower(), repo["mirror_interval"] if repo["mirror"] else None) for repo in batch
+                )
                 page += 1
         return self.repos[org]
 
     def has(self, owner, name):
         return name.lower() in self.existing(owner)
+
+    def sync_interval(self, owner, name, interval):
+        current = self.existing(owner)[name.lower()]
+        if not interval or current is None or seconds(current) == seconds(interval):
+            return
+        full_name = f"{owner}/{name}"
+        if self.dry_run:
+            print(f"would set {full_name} interval to {interval}")
+            return
+        status, body = self.call("PATCH", f"/repos/{owner}/{name}", {"mirror_interval": interval})
+        if status == 200:
+            self.existing(owner)[name.lower()] = interval
+            print(f"ok    {full_name} interval {interval}")
+        else:
+            fail(f"setting interval of {full_name} (HTTP {status}): {error_text(body)}")
 
     def ensure_org(self, org, avatar_url):
         status, body = self.call("GET", f"/orgs/{org}")
@@ -314,9 +332,10 @@ class Forgejo:
     def mirror(self, repo, interval):
         full_name = f"{repo.owner}/{repo.name}"
         if self.has(repo.owner, repo.name):
+            self.sync_interval(repo.owner, repo.name, interval)
             return
         if self.dry_run:
-            self.existing(repo.owner).add(repo.name.lower())
+            self.existing(repo.owner)[repo.name.lower()] = interval
             print(f"would mirror {full_name}")
             return
         status, body = self.call("POST", "/repos/migrate", {
@@ -332,10 +351,15 @@ class Forgejo:
             "private": False,
         })
         if status == 201:
-            self.existing(repo.owner).add(repo.name.lower())
+            self.existing(repo.owner)[repo.name.lower()] = interval
             print(f"ok    {full_name}")
         elif status != 409:
             fail(f"{full_name} (HTTP {status}): {error_text(body)}")
+
+
+def seconds(duration):
+    units = {"h": 3600, "m": 60, "s": 1}
+    return sum(int(amount) * units[unit] for amount, unit in re.findall(r"(\d+)([hms])", duration))
 
 
 def segment(value):
@@ -421,6 +445,7 @@ def main():
             origin, path, org, name = item.origin, item.path, item.org, item.name
             # owner/repo urls name their target, so existing mirrors never touch the source
             if len(path) == 2 and not args.avatars and forgejo.has(org or path[0], name or path[1]):
+                forgejo.sync_interval(org or path[0], name or path[1], item.interval)
                 continue
             try:
                 repos = fetch_repos(origin, path, item.forks)
