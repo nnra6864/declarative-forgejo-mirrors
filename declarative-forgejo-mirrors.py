@@ -22,8 +22,10 @@ CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / NA
 EXAMPLE = Path(__file__).resolve().with_name("config.toml.example")
 TOKENS = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / NAME / "tokens"
 SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
+INTERVAL = re.compile(r"0|(?=\d)(\d+h)?(\d+m)?(\d+s)?")
 CGIT_REPO = re.compile(r"<td class='(?:sub|top)level-repo'><a [^>]*?href='([^']+)'.*?</td><td><a [^>]*>(.*?)</a>", re.S)
 CGIT_LOGO = re.compile(r"<td class='logo'.*?<img src='([^']+)'", re.S)
+CGIT_CLONE = re.compile(r"<link rel='vcs-git' href='([^']+)'")
 
 failed = False
 
@@ -35,6 +37,16 @@ class Repo(NamedTuple):
     description: str
     avatar_url: str
     fork: bool
+    cgit: bool = False
+
+
+class Mirror(NamedTuple):
+    origin: str
+    path: tuple
+    forks: bool
+    org: str | None
+    name: str | None
+    interval: str | None
 
 
 class SourceError(Exception):
@@ -134,10 +146,17 @@ def cgit_repos(url):
         for href, description in CGIT_REPO.findall(page):
             clone_url = urljoin(f"{url}/", html.unescape(href)).rstrip("/")
             name = clone_url.rsplit("/", 1)[-1].removesuffix(".git")
-            repos[clone_url] = Repo("", name, clone_url, html.unescape(description).strip(), avatar_url, False)
+            repos[clone_url] = Repo("", name, clone_url, html.unescape(description).strip(), avatar_url, False, True)
         if len(repos) == count:
             break
     return list(repos.values())
+
+
+def cgit_clone_url(url):
+    # cgit's clone-url can point clones at another host, its summary page advertises where
+    status, body = request("GET", f"{url}/")
+    urls = map(html.unescape, CGIT_CLONE.findall(body.decode(errors="replace"))) if status == 200 else ()
+    return next((clone_url for clone_url in urls if clone_url.startswith(("https://", "http://"))), url)
 
 
 def plain_repos(origin, path):
@@ -292,7 +311,7 @@ class Forgejo:
             self.orgs[repo.owner] = self.ensure_org(repo.owner, repo.avatar_url)
         return self.orgs[repo.owner]
 
-    def mirror(self, repo):
+    def mirror(self, repo, interval):
         full_name = f"{repo.owner}/{repo.name}"
         if self.has(repo.owner, repo.name):
             return
@@ -301,11 +320,12 @@ class Forgejo:
             print(f"would mirror {full_name}")
             return
         status, body = self.call("POST", "/repos/migrate", {
-            "clone_addr": repo.clone_url,
+            "clone_addr": cgit_clone_url(repo.clone_url) if repo.cgit else repo.clone_url,
             "repo_owner": repo.owner,
             "repo_name": repo.name,
             "description": repo.description,
             "mirror": True,
+            **({"mirror_interval": interval} if interval else {}),
             "lfs": True,
             "wiki": True,
             "service": "git",
@@ -318,14 +338,24 @@ class Forgejo:
             fail(f"{full_name} (HTTP {status}): {error_text(body)}")
 
 
+def segment(value):
+    return value is None or isinstance(value, str) and SEGMENT.fullmatch(value)
+
+
 def parse_item(item):
     if isinstance(item, str):
-        return split_url(item), True, None
-    if isinstance(item, dict) and isinstance(item.get("url"), str) and set(item) <= {"url", "forks", "org"}:
-        forks, org = item.get("forks", True), item.get("org")
-        if isinstance(forks, bool) and (org is None or isinstance(org, str) and SEGMENT.fullmatch(org)):
-            return split_url(item["url"]), forks, org
-    die(f'bad mirror: {item!r}, use "url" or {{ url = "url", forks = false, org = "org" }}')
+        return Mirror(*split_url(item), True, None, None, None)
+    if isinstance(item, dict) and isinstance(item.get("url"), str) and set(item) <= {"url", "forks", "org", "name", "interval"}:
+        forks, org, name, interval = item.get("forks", True), item.get("org"), item.get("name"), item.get("interval")
+        if (
+            isinstance(forks, bool) and segment(org) and segment(name)
+            and (interval is None or isinstance(interval, str) and INTERVAL.fullmatch(interval))
+        ):
+            return Mirror(*split_url(item["url"]), forks, org, name, interval)
+    die(
+        f'bad mirror: {item!r}, use "url" or '
+        '{ url = "url", forks = false, org = "org", name = "repo", interval = "24h" }'
+    )
 
 
 def load_config(path):
@@ -387,24 +417,30 @@ def main():
     for url, items in servers.items():
         print(f"== {url}")
         forgejo = Forgejo(url, tokens[url], args.dry_run, args.avatars)
-        for (origin, path), forks, org in items:
+        for item in items:
+            origin, path, org, name = item.origin, item.path, item.org, item.name
             # owner/repo urls name their target, so existing mirrors never touch the source
-            if len(path) == 2 and not args.avatars and forgejo.has(org or path[0], path[1]):
+            if len(path) == 2 and not args.avatars and forgejo.has(org or path[0], name or path[1]):
                 continue
             try:
-                repos = fetch_repos(origin, path, forks)
+                repos = fetch_repos(origin, path, item.forks)
             except SourceError as error:
                 fail(str(error))
                 continue
             if not repos:
                 print(f"skip  {origin}/{'/'.join(path)} (no public repos)")
+            if name and len(repos) > 1:
+                fail(f"{origin}/{'/'.join(path)} has {len(repos)} repos, name only works on single repos")
+                continue
             for repo in repos:
+                if name:
+                    repo = repo._replace(name=name)
                 if org:
                     repo = repo._replace(owner=org, avatar_url=repo.avatar_url if not repo.owner else "")
                 if not repo.owner:
                     fail(f"{repo.clone_url} has no owner, set org")
                 elif forgejo.sync_org(repo):
-                    forgejo.mirror(repo)
+                    forgejo.mirror(repo, item.interval)
 
     sys.exit(failed)
 

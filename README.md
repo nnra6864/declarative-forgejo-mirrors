@@ -47,8 +47,13 @@ mirrors = [
   { url = "https://codeberg.org/owner", forks = false },
   { url = "https://git.example.com/repo", org = "my-mirrors" },
   { url = "https://cgit.example.com", org = "my-mirrors" },
+  { url = "https://github.com/owner/repo", name = "other-name" },
+  { url = "https://github.com/owner", interval = "24h" },
 ]
 ```
+
+`name` renames the mirror and only works on URLs that resolve to a single repo.\
+`interval` sets how often Forgejo syncs the mirrors, as hours, minutes and seconds like `24h` or `1h30m`, or `0` to never sync. Forgejo's default is `8h`, and it rejects anything below its minimum, `10m` by default.
 
 Plain git servers have no owners, so their repos need an `org`, which also works on any other URL to override the target org.\
 Avatars are only copied when `org` isn't set, or when the source has no owners, like a cgit logo, and the bot must be an owner of that org.
@@ -73,6 +78,7 @@ To move servers, change the header, save a token for it and run it again.
 - GitHub allows 60 unauthenticated requests per hour.
 - GitLab rate limits unauthenticated requests hard, especially for user URLs, so those can fail with HTTP 429 for a while. Group and repo URLs are more reliable.
 - `forks = false` doesn't work on GitLab, which doesn't reveal forks without a token.
+- `name` and `interval` only apply when a mirror is created, change existing ones in the repo settings.
 - Each repo has to finish cloning before the next starts, so a reverse proxy timeout can show up as `FAIL`.
 
 # ☦
