@@ -40,6 +40,8 @@ It can't touch other users or their repos. Revoke it and re-run the script, whic
 Each header in the config is a server to mirror to, with its own token. Paste repo, user or org URLs under it:
 
 ```toml
+interval = "24h"
+
 ["git.nnstdios.com"]
 mirrors = [
   "https://github.com/owner/repo",
@@ -48,12 +50,12 @@ mirrors = [
   { url = "https://git.example.com/repo", org = "my-mirrors" },
   { url = "https://cgit.example.com", org = "my-mirrors" },
   { url = "https://github.com/owner/repo", name = "other-name" },
-  { url = "https://github.com/owner", interval = "24h" },
+  { url = "https://github.com/owner", interval = "1h" },
 ]
 ```
 
 `name` renames the mirror and only works on URLs that resolve to a single repo.\
-`interval` sets how often Forgejo syncs the mirrors, as hours, minutes and seconds like `24h` or `1h30m`, or `0` to never sync. Forgejo's default is `8h`, and it rejects anything below its minimum, `10m` by default.
+`interval` sets how often Forgejo syncs the mirrors, at the top for all of them and on a mirror to override that, as hours, minutes and seconds like `24h` or `1h30m`, or `0` to never sync. Forgejo's default is `8h`, and it rejects anything below its minimum, `10m` by default.
 
 Plain git servers have no owners, so their repos need an `org`, which also works on any other URL to override the target org.\
 Avatars are only copied when `org` isn't set, or when the source has no owners, like a cgit logo, and the bot must be an owner of that org.
@@ -70,7 +72,7 @@ To move servers, change the header, save a token for it and run it again.
 
 ### Limitations
 
-- Headers need quotes, otherwise TOML treats the dots as nesting.
+- Headers need quotes, otherwise TOML treats the dots as nesting, and the global `interval` has to come before them.
 - Plain git servers can only mirror single repos, since there's no way to list them, except cgit, whose index page lists them all.
 - An owner can't be mirrored if that name is already a Forgejo user, and the bot must be an owner of any org that already exists.
 - Same-named owners on different sources share an org, and if a repo name is taken the later one is skipped.

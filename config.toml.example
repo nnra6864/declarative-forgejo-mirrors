@@ -1,3 +1,5 @@
+# interval = "24h"  # how often every mirror syncs, Forgejo defaults to 8h
+
 ["git.nnstdios.com"]
 mirrors = [
   # "https://github.com/owner/repo",                 # one repo
@@ -6,5 +8,5 @@ mirrors = [
   # { url = "https://git.example.com/repo", org = "my-mirrors" },  # server without owners
   # { url = "https://cgit.example.com", org = "my-mirrors" },  # every repo on a cgit index
   # { url = "https://github.com/owner/repo", name = "other-name" },  # rename the mirror
-  # { url = "https://github.com/owner", interval = "24h" },  # sync every 24h instead of 8h
+  # { url = "https://github.com/owner", interval = "1h" },  # override interval for these
 ]

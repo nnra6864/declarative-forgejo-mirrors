@@ -366,15 +366,16 @@ def segment(value):
     return value is None or isinstance(value, str) and SEGMENT.fullmatch(value)
 
 
-def parse_item(item):
+def duration(value):
+    return value is None or isinstance(value, str) and INTERVAL.fullmatch(value)
+
+
+def parse_item(item, interval):
     if isinstance(item, str):
-        return Mirror(*split_url(item), True, None, None, None)
+        return Mirror(*split_url(item), True, None, None, interval)
     if isinstance(item, dict) and isinstance(item.get("url"), str) and set(item) <= {"url", "forks", "org", "name", "interval"}:
-        forks, org, name, interval = item.get("forks", True), item.get("org"), item.get("name"), item.get("interval")
-        if (
-            isinstance(forks, bool) and segment(org) and segment(name)
-            and (interval is None or isinstance(interval, str) and INTERVAL.fullmatch(interval))
-        ):
+        forks, org, name, interval = item.get("forks", True), item.get("org"), item.get("name"), item.get("interval", interval)
+        if isinstance(forks, bool) and segment(org) and segment(name) and duration(interval):
             return Mirror(*split_url(item["url"]), forks, org, name, interval)
     die(
         f'bad mirror: {item!r}, use "url" or '
@@ -399,12 +400,16 @@ def load_config(path):
     except tomllib.TOMLDecodeError as error:
         die(f"bad config {path}: {error}")
 
+    interval = config.pop("interval", None)
+    if not duration(interval):
+        die(f'bad interval: {interval!r}, use hours, minutes and seconds like "24h" or "1h30m", or "0"')
+
     servers = {}
     for server, section in config.items():
         if not isinstance(section, dict) or not isinstance(section.get("mirrors"), list) or len(section) != 1:
             die(f'[{server}] must only have a mirrors list, and the header needs quotes: ["git.example.com"]')
         url = server if "://" in server else f"https://{server}"
-        servers[url.rstrip("/")] = [parse_item(item) for item in section["mirrors"]]
+        servers[url.rstrip("/")] = [parse_item(item, interval) for item in section["mirrors"]]
     return servers
 
 
