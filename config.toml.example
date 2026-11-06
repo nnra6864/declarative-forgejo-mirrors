@@ -6,6 +6,7 @@ mirrors = [
   # "https://github.com/owner/repo",                 # one repo
   # "https://gitlab.com/owner",                      # everything they own
   # { url = "https://codeberg.org/owner", forks = false },  # everything except forks
+  # { url = "https://github.com/owner", archived = false },  # everything except archived repos
   # { url = "https://git.example.com/repo", org = "my-mirrors" },  # server without owners
   # { url = "https://cgit.example.com", org = "my-mirrors" },  # every repo on a cgit index
   # { url = "https://github.com/owner/repo", name = "other-name" },  # rename the mirror

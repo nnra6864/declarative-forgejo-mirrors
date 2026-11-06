@@ -47,6 +47,7 @@ class Repo(NamedTuple):
     description: str
     avatar_url: str
     fork: bool
+    archived: bool = False
     cgit: bool = False
 
 
@@ -54,6 +55,7 @@ class Mirror(NamedTuple):
     origin: str
     path: tuple
     forks: bool
+    archived: bool
     org: str | None
     name: str | None
     interval: str | None
@@ -169,6 +171,7 @@ def forge_repos(api, path, avatar_suffix=""):
             repo["description"] or "",
             f"{repo['owner']['avatar_url']}{avatar_suffix}",
             repo["fork"],
+            repo.get("archived", False),
         )
         for repo in repos
     ]
@@ -195,7 +198,7 @@ def cgit_repos(url):
         for href, description in CGIT_REPO.findall(page):
             clone_url = urljoin(f"{url}/", html.unescape(href)).rstrip("/")
             name = clone_url.rsplit("/", 1)[-1].removesuffix(".git")
-            repos[clone_url] = Repo("", name, clone_url, html.unescape(description).strip(), avatar_url, False, True)
+            repos[clone_url] = Repo("", name, clone_url, html.unescape(description).strip(), avatar_url, False, cgit=True)
         if len(repos) == count:
             break
     return list(repos.values())
@@ -251,6 +254,7 @@ def gitlab_repos(origin, path):
             project["description"] or "",
             gitlab_avatar(origin, owner),
             "forked_from_project" in project,
+            project.get("archived", False),
         ))
     return repos
 
@@ -274,13 +278,16 @@ def detect_source(origin):
 
 
 @cache
-def fetch_repos(origin, path, forks):
+def fetch_repos(origin, path, forks, archived):
     source = detect_source(origin)
     if not path and source is not plain_repos:
         raise SourceError(f"{origin} needs an owner or repo in the url")
     if source is gitlab_repos and not forks and not find_token(urlsplit(origin).netloc):
         raise SourceError(f"{origin} doesn't reveal forks without a token, save one or remove forks = false")
-    return [repo for repo in source(origin, path) if forks or not repo.fork]
+    return [
+        repo for repo in source(origin, path)
+        if (forks or not repo.fork) and (archived or not repo.archived)
+    ]
 
 
 def split_url(url):
@@ -440,19 +447,19 @@ def duration(value):
 
 def parse_item(item, interval):
     if isinstance(item, str):
-        return Mirror(*split_url(item), True, None, None, interval)
-    keys = {"url", "forks", "org", "name", "interval", "exclude"}
+        return Mirror(*split_url(item), True, True, None, None, interval)
+    keys = {"url", "forks", "archived", "org", "name", "interval", "exclude"}
     if isinstance(item, dict) and isinstance(item.get("url"), str) and set(item) <= keys:
         forks, org, name, interval = item.get("forks", True), item.get("org"), item.get("name"), item.get("interval", interval)
-        exclude = item.get("exclude", [])
+        exclude, archived = item.get("exclude", []), item.get("archived", True)
         if (
-            isinstance(forks, bool) and segment(org) and segment(name) and duration(interval)
+            isinstance(forks, bool) and isinstance(archived, bool) and segment(org) and segment(name) and duration(interval)
             and isinstance(exclude, list) and all(isinstance(pattern, str) and pattern for pattern in exclude)
         ):
-            return Mirror(*split_url(item["url"]), forks, org, name, interval, tuple(exclude))
+            return Mirror(*split_url(item["url"]), forks, archived, org, name, interval, tuple(exclude))
     die(
         f'bad mirror: {item!r}, use "url" or '
-        '{ url = "url", forks = false, org = "org", name = "repo", interval = "24h", exclude = ["repo", "prefix-*"] }'
+        '{ url = "url", forks = false, archived = false, org = "org", name = "repo", interval = "24h", exclude = ["repo", "prefix-*"] }'
     )
 
 
@@ -591,7 +598,7 @@ def main():
                 forgejo.sync_interval(org or path[0], name or path[1], item.interval)
                 continue
             # sources checked within rescan are skipped, unless one of their mirrors went missing
-            key = f"{url} {origin}/{'/'.join(path)} forks={item.forks} org={org} name={name} exclude={sorted(item.exclude)}"
+            key = f"{url} {origin}/{'/'.join(path)} forks={item.forks} archived={item.archived} org={org} name={name} exclude={sorted(item.exclude)}"
             scan = old_scans.get(key)
             if (
                 scan and not (args.force or args.avatars) and time.time() - scan["time"] < rescan_seconds
@@ -605,7 +612,7 @@ def main():
             if origin in limited:
                 continue
             try:
-                repos = fetch_repos(origin, path, item.forks)
+                repos = fetch_repos(origin, path, item.forks, item.archived)
             except RateLimited as error:
                 limited.add(origin)
                 fail(f"{error}, skipping {origin} for the rest of this run")

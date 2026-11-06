@@ -65,6 +65,7 @@ mirrors = [
   "https://github.com/owner/repo",
   "https://gitlab.com/owner",
   { url = "https://codeberg.org/owner", forks = false },
+  { url = "https://github.com/owner", archived = false },
   { url = "https://git.example.com/repo", org = "my-mirrors" },
   { url = "https://cgit.example.com", org = "my-mirrors" },
   { url = "https://github.com/owner/repo", name = "other-name" },
@@ -73,6 +74,8 @@ mirrors = [
 ]
 ```
 
+`forks = false` and `archived = false` skip forks and archived repos, both are mirrored by default. Like `exclude`, they only stop new mirrors.\
+The archived status itself isn't mirrored, mirrors of archived repos are regular mirrors on your server.\
 `name` renames the mirror and only works on URLs that resolve to a single repo.\
 `exclude` skips repos by their name on the source, ignoring case, `*` and `?` work as wildcards. It only stops new mirrors, ones that already exist are kept.\
 `interval` sets how often Forgejo syncs the mirrors, at the top for all of them and on a mirror to override that, as hours, minutes and seconds like `24h` or `1h30m`, or `0` to never sync. The default is `24h`, which also applies to existing mirrors, and Forgejo rejects anything below its minimum, `10m` by default.
