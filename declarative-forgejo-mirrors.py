@@ -30,6 +30,10 @@ INTERVAL = re.compile(r"0|(?=\d)(\d+h)?(\d+m)?(\d+s)?")
 CGIT_REPO = re.compile(r"<td class='(?:sub|top)level-repo'><a [^>]*?href='([^']+)'.*?</td><td><a [^>]*>(.*?)</a>", re.S)
 CGIT_LOGO = re.compile(r"<td class='logo'.*?<img src='([^']+)'", re.S)
 CGIT_CLONE = re.compile(r"<link rel='vcs-git' href='([^']+)'")
+# seconds before giving up on a silent server, migrations clone inside the request so they get longer
+TIMEOUT = 60
+MIGRATE_TIMEOUT = 30 * 60
+TIMED_OUT = b"timed out"
 
 failed = False
 # origins that rate limited us, they aren't contacted again this run
@@ -85,20 +89,25 @@ def error_text(body):
         return body.decode(errors="replace").strip()[:200]
 
 
-def send(method, url, body=None, headers=None):
+def send(method, url, body=None, headers=None, timeout=TIMEOUT):
     data = None if body is None else json.dumps(body).encode()
     headers = {"User-Agent": NAME, "Content-Type": "application/json", **(headers or {})}
     try:
-        with urlopen(Request(url, data, headers, method=method)) as response:
+        with urlopen(Request(url, data, headers, method=method), timeout=timeout) as response:
             return response.status, response.read(), response.headers
     except HTTPError as error:
         return error.code, error.read(), error.headers
     except URLError as error:
+        if isinstance(error.reason, TimeoutError):
+            return 0, TIMED_OUT, {}
         return 0, str(error.reason).encode(), {}
+    except TimeoutError:
+        # read timeouts aren't wrapped in URLError
+        return 0, TIMED_OUT, {}
 
 
-def request(method, url, body=None, headers=None):
-    return send(method, url, body, headers)[:2]
+def request(method, url, body=None, headers=None, timeout=TIMEOUT):
+    return send(method, url, body, headers, timeout)[:2]
 
 
 def reset_time(headers):
@@ -293,8 +302,8 @@ class Forgejo:
         self.orgs = {}
         self.repos = {}
 
-    def call(self, method, path, body=None):
-        status, data = request(method, f"{self.api}{path}", body, {"Authorization": f"token {self.token}"})
+    def call(self, method, path, body=None, timeout=TIMEOUT):
+        status, data = request(method, f"{self.api}{path}", body, {"Authorization": f"token {self.token}"}, timeout)
         if status == 401:
             die(f"{self.api} rejected the token: {error_text(data)}")
         return status, data
@@ -394,7 +403,7 @@ class Forgejo:
             "wiki": True,
             "service": "git",
             "private": False,
-        })
+        }, MIGRATE_TIMEOUT)
         if status == 201:
             self.existing(repo.owner)[repo.name.lower()] = interval
             print(f"ok    {full_name}")
@@ -402,6 +411,10 @@ class Forgejo:
             # the proxy gave up waiting, Forgejo usually keeps cloning, the next run checks it again
             warn(f"{full_name} timed out at the reverse proxy (HTTP {status}), it's probably still cloning\n"
                  f"      check that {self.url}/{full_name} exists, and raise the proxy's timeout to stop this")
+            return False
+        elif status == 0 and body == TIMED_OUT:
+            warn(f"{full_name} got no answer in {MIGRATE_TIMEOUT // 60}m, it may still be cloning or stuck\n"
+                 f"      check that {self.url}/{full_name} exists, the next run checks it again")
             return False
         elif status != 409:
             message = error_text(body)
