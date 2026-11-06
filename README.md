@@ -69,10 +69,12 @@ mirrors = [
   { url = "https://cgit.example.com", org = "my-mirrors" },
   { url = "https://github.com/owner/repo", name = "other-name" },
   { url = "https://github.com/owner", interval = "1h" },
+  { url = "https://github.com/owner", exclude = ["huge-repo", "old-*"] },
 ]
 ```
 
 `name` renames the mirror and only works on URLs that resolve to a single repo.\
+`exclude` skips repos by their name on the source, ignoring case, `*` and `?` work as wildcards. It only stops new mirrors, ones that already exist are kept.\
 `interval` sets how often Forgejo syncs the mirrors, at the top for all of them and on a mirror to override that, as hours, minutes and seconds like `24h` or `1h30m`, or `0` to never sync. The default is `24h`, which also applies to existing mirrors, and Forgejo rejects anything below its minimum, `10m` by default.
 
 `rescan` is how long a source is left alone after it was checked, `24h` by default, or `0` to check every run.\

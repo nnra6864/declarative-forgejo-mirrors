@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+import fnmatch
 import getpass
 import html
 import json
@@ -52,6 +53,7 @@ class Mirror(NamedTuple):
     org: str | None
     name: str | None
     interval: str | None
+    exclude: tuple = ()
 
 
 class SourceError(Exception):
@@ -416,13 +418,18 @@ def duration(value):
 def parse_item(item, interval):
     if isinstance(item, str):
         return Mirror(*split_url(item), True, None, None, interval)
-    if isinstance(item, dict) and isinstance(item.get("url"), str) and set(item) <= {"url", "forks", "org", "name", "interval"}:
+    keys = {"url", "forks", "org", "name", "interval", "exclude"}
+    if isinstance(item, dict) and isinstance(item.get("url"), str) and set(item) <= keys:
         forks, org, name, interval = item.get("forks", True), item.get("org"), item.get("name"), item.get("interval", interval)
-        if isinstance(forks, bool) and segment(org) and segment(name) and duration(interval):
-            return Mirror(*split_url(item["url"]), forks, org, name, interval)
+        exclude = item.get("exclude", [])
+        if (
+            isinstance(forks, bool) and segment(org) and segment(name) and duration(interval)
+            and isinstance(exclude, list) and all(isinstance(pattern, str) and pattern for pattern in exclude)
+        ):
+            return Mirror(*split_url(item["url"]), forks, org, name, interval, tuple(exclude))
     die(
         f'bad mirror: {item!r}, use "url" or '
-        '{ url = "url", forks = false, org = "org", name = "repo", interval = "24h" }'
+        '{ url = "url", forks = false, org = "org", name = "repo", interval = "24h", exclude = ["repo", "prefix-*"] }'
     )
 
 
@@ -561,7 +568,7 @@ def main():
                 forgejo.sync_interval(org or path[0], name or path[1], item.interval)
                 continue
             # sources checked within rescan are skipped, unless one of their mirrors went missing
-            key = f"{url} {origin}/{'/'.join(path)} forks={item.forks} org={org} name={name}"
+            key = f"{url} {origin}/{'/'.join(path)} forks={item.forks} org={org} name={name} exclude={sorted(item.exclude)}"
             scan = old_scans.get(key)
             if (
                 scan and not (args.force or args.avatars) and time.time() - scan["time"] < rescan_seconds
@@ -583,6 +590,11 @@ def main():
             except SourceError as error:
                 fail(str(error))
                 continue
+            # matched against the source name, case-insensitively, before any rename
+            repos = [
+                repo for repo in repos
+                if not any(fnmatch.fnmatch(repo.name.lower(), pattern.lower()) for pattern in item.exclude)
+            ]
             if not repos:
                 print(f"skip  {origin}/{'/'.join(path)} (no public repos)")
             if name and len(repos) > 1:

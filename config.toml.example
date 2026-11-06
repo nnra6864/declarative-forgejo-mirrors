@@ -10,4 +10,5 @@ mirrors = [
   # { url = "https://cgit.example.com", org = "my-mirrors" },  # every repo on a cgit index
   # { url = "https://github.com/owner/repo", name = "other-name" },  # rename the mirror
   # { url = "https://github.com/owner", interval = "1h" },  # override interval for these
+  # { url = "https://github.com/owner", exclude = ["huge-repo", "old-*"] },  # everything except these
 ]
