@@ -1,5 +1,8 @@
 # interval = "24h"  # how often every mirror syncs
 # rescan = "24h"    # how often owner urls are checked for new repos, --force ignores it
+# forks = false     # skip forks everywhere, a mirror's forks = true overrides it
+# archived = false  # skip archived repos everywhere, a mirror's archived = true overrides it
+# exclude = []      # skip these repo names everywhere, on top of each mirror's own
 
 ["git.nnstdios.com"]
 mirrors = [

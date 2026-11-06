@@ -445,18 +445,25 @@ def duration(value):
     return value is None or isinstance(value, str) and INTERVAL.fullmatch(value)
 
 
-def parse_item(item, interval):
+def patterns(value):
+    return isinstance(value, list) and all(isinstance(pattern, str) and pattern for pattern in value)
+
+
+def parse_item(item, defaults):
     if isinstance(item, str):
-        return Mirror(*split_url(item), True, True, None, None, interval)
+        item = {"url": item}
     keys = {"url", "forks", "archived", "org", "name", "interval", "exclude"}
     if isinstance(item, dict) and isinstance(item.get("url"), str) and set(item) <= keys:
-        forks, org, name, interval = item.get("forks", True), item.get("org"), item.get("name"), item.get("interval", interval)
-        exclude, archived = item.get("exclude", []), item.get("archived", True)
+        forks, archived = item.get("forks", defaults["forks"]), item.get("archived", defaults["archived"])
+        org, name, interval = item.get("org"), item.get("name"), item.get("interval", defaults["interval"])
+        exclude = item.get("exclude", [])
         if (
             isinstance(forks, bool) and isinstance(archived, bool) and segment(org) and segment(name) and duration(interval)
-            and isinstance(exclude, list) and all(isinstance(pattern, str) and pattern for pattern in exclude)
+            and patterns(exclude)
         ):
-            return Mirror(*split_url(item["url"]), forks, archived, org, name, interval, tuple(exclude))
+            # global excludes add to the mirror's own
+            exclude = tuple(dict.fromkeys([*defaults["exclude"], *exclude]))
+            return Mirror(*split_url(item["url"]), forks, archived, org, name, interval, exclude)
     die(
         f'bad mirror: {item!r}, use "url" or '
         '{ url = "url", forks = false, archived = false, org = "org", name = "repo", interval = "24h", exclude = ["repo", "prefix-*"] }'
@@ -486,13 +493,20 @@ def load_config(path):
     rescan = config.pop("rescan", "24h")
     if not duration(rescan):
         die(f'bad rescan: {rescan!r}, use hours, minutes and seconds like "24h" or "1h30m", or "0"')
+    defaults = {"interval": interval, "forks": config.pop("forks", True), "archived": config.pop("archived", True)}
+    for key in ("forks", "archived"):
+        if not isinstance(defaults[key], bool):
+            die(f"bad {key}: {defaults[key]!r}, use true or false")
+    defaults["exclude"] = config.pop("exclude", [])
+    if not patterns(defaults["exclude"]):
+        die(f'bad exclude: {defaults["exclude"]!r}, use a list like ["repo", "prefix-*"]')
 
     servers = {}
     for server, section in config.items():
         if not isinstance(section, dict) or not isinstance(section.get("mirrors"), list) or len(section) != 1:
             die(f'[{server}] must only have a mirrors list, and the header needs quotes: ["git.example.com"]')
         url = server if "://" in server else f"https://{server}"
-        servers[url.rstrip("/")] = [parse_item(item, interval) for item in section["mirrors"]]
+        servers[url.rstrip("/")] = [parse_item(item, defaults) for item in section["mirrors"]]
     return servers, rescan
 
 

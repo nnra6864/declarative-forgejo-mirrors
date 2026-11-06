@@ -59,6 +59,9 @@ Each header in the config is a server to mirror to, with its own token. Paste re
 ```toml
 interval = "24h"
 rescan = "24h"
+forks = true
+archived = true
+exclude = []
 
 ["git.nnstdios.com"]
 mirrors = [
@@ -75,6 +78,7 @@ mirrors = [
 ```
 
 `forks = false` and `archived = false` skip forks and archived repos, both are mirrored by default. Like `exclude`, they only stop new mirrors.\
+Set them at the top to change the default for every mirror, which a mirror's own `forks` or `archived` overrides. A top-level `exclude` is added to each mirror's own instead.\
 The archived status itself isn't mirrored, mirrors of archived repos are regular mirrors on your server.\
 `name` renames the mirror and only works on URLs that resolve to a single repo.\
 `exclude` skips repos by their name on the source, ignoring case, `*` and `?` work as wildcards. It only stops new mirrors, ones that already exist are kept.\
@@ -99,7 +103,7 @@ To move servers, change the header, save a token for it and run it again.
 
 ### Limitations
 
-- Headers need quotes, otherwise TOML treats the dots as nesting, and the global `interval` has to come before them.
+- Headers need quotes, otherwise TOML treats the dots as nesting, and the global settings have to come before them.
 - Plain git servers can only mirror single repos, since there's no way to list them, except cgit, whose index page lists them all.
 - An owner can't be mirrored if that name is already a Forgejo user, and the bot must be an owner of any org that already exists.
 - Same-named owners on different sources share an org, and if a repo name is taken the later one is skipped.
