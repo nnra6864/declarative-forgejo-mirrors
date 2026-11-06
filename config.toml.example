@@ -1,4 +1,5 @@
-# interval = "24h"  # how often every mirror syncs, Forgejo defaults to 8h
+# interval = "24h"  # how often every mirror syncs
+# rescan = "24h"    # how often owner urls are checked for new repos, --force ignores it
 
 ["git.nnstdios.com"]
 mirrors = [

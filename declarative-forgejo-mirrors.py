@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+import getpass
 import html
 import json
 import os
@@ -9,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import tomllib
 from functools import cache
 from pathlib import Path
@@ -21,6 +23,7 @@ NAME = "declarative-forgejo-mirrors"
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / NAME / "config.toml"
 EXAMPLE = Path(__file__).resolve().with_name("config.toml.example")
 TOKENS = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / NAME / "tokens"
+SCANS = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / NAME / "scans.json"
 SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 INTERVAL = re.compile(r"0|(?=\d)(\d+h)?(\d+m)?(\d+s)?")
 CGIT_REPO = re.compile(r"<td class='(?:sub|top)level-repo'><a [^>]*?href='([^']+)'.*?</td><td><a [^>]*>(.*?)</a>", re.S)
@@ -28,6 +31,8 @@ CGIT_LOGO = re.compile(r"<td class='logo'.*?<img src='([^']+)'", re.S)
 CGIT_CLONE = re.compile(r"<link rel='vcs-git' href='([^']+)'")
 
 failed = False
+# origins that rate limited us, they aren't contacted again this run
+limited = set()
 
 
 class Repo(NamedTuple):
@@ -53,6 +58,10 @@ class SourceError(Exception):
     pass
 
 
+class RateLimited(SourceError):
+    pass
+
+
 def die(message):
     sys.exit(f"error: {message}")
 
@@ -70,27 +79,52 @@ def error_text(body):
         return body.decode(errors="replace").strip()[:200]
 
 
-def request(method, url, body=None, headers=None):
+def send(method, url, body=None, headers=None):
     data = None if body is None else json.dumps(body).encode()
     headers = {"User-Agent": NAME, "Content-Type": "application/json", **(headers or {})}
     try:
         with urlopen(Request(url, data, headers, method=method)) as response:
-            return response.status, response.read()
+            return response.status, response.read(), response.headers
     except HTTPError as error:
-        return error.code, error.read()
+        return error.code, error.read(), error.headers
     except URLError as error:
-        return 0, str(error.reason).encode()
+        return 0, str(error.reason).encode(), {}
+
+
+def request(method, url, body=None, headers=None):
+    return send(method, url, body, headers)[:2]
+
+
+def reset_time(headers):
+    if (retry := headers.get("retry-after", "")).isdigit():
+        return time.time() + int(retry)
+    for key in ("x-ratelimit-reset", "ratelimit-reset"):
+        if (value := headers.get(key, "")).isdigit():
+            return int(value)
+    return None
+
+
+def api_get(url):
+    host = urlsplit(url).netloc
+    token = find_token({"api.github.com": "github.com"}.get(host, host))
+    status, body, headers = send("GET", url, headers={"Authorization": f"Bearer {token}"} if token else None)
+    if status == 429 or status == 403 and (headers.get("x-ratelimit-remaining") == "0" or b"rate limit" in body.lower()):
+        reset = reset_time(headers)
+        until = f" until {time.strftime('%H:%M', time.localtime(reset))}" if reset else ""
+        hint = "" if token else f", a token for {host.removeprefix('api.')} raises the limit"
+        raise RateLimited(f"{host} rate limited us{until}{hint}")
+    return status, body
 
 
 def get_json(url):
-    status, body = request("GET", url)
+    status, body = api_get(url)
     if status != 200:
         raise SourceError(f"{url} (HTTP {status}): {error_text(body)}")
     return json.loads(body)
 
 
 def probe(url):
-    status, body = request("GET", url)
+    status, body = api_get(url)
     if status == 404:
         return None
     if status != 200:
@@ -174,6 +208,8 @@ def gitlab_avatar(origin, owner):
     api = f"{origin}/api/v4"
     try:
         account = probe(f"{api}/groups/{owner}") or next(iter(probe(f"{api}/users?username={owner}") or []), {})
+    except RateLimited:
+        raise
     except SourceError:
         return ""
     url = account.get("avatar_url")
@@ -213,6 +249,8 @@ def detect_source(origin):
     try:
         if "version" in (probe(f"{origin}/api/v1/version") or {}):
             return forgejo_repos
+    except RateLimited:
+        raise
     except (SourceError, ValueError):
         pass
     if request("GET", f"{origin}/api/v4/version")[0] in (200, 401, 429):
@@ -225,8 +263,8 @@ def fetch_repos(origin, path, forks):
     source = detect_source(origin)
     if not path and source is not plain_repos:
         raise SourceError(f"{origin} needs an owner or repo in the url")
-    if source is gitlab_repos and not forks:
-        raise SourceError(f"{origin} doesn't reveal forks without a token, remove forks = false")
+    if source is gitlab_repos and not forks and not find_token(urlsplit(origin).netloc):
+        raise SourceError(f"{origin} doesn't reveal forks without a token, save one or remove forks = false")
     return [repo for repo in source(origin, path) if forks or not repo.fork]
 
 
@@ -333,11 +371,11 @@ class Forgejo:
         full_name = f"{repo.owner}/{repo.name}"
         if self.has(repo.owner, repo.name):
             self.sync_interval(repo.owner, repo.name, interval)
-            return
+            return True
         if self.dry_run:
             self.existing(repo.owner)[repo.name.lower()] = interval
             print(f"would mirror {full_name}")
-            return
+            return True
         status, body = self.call("POST", "/repos/migrate", {
             "clone_addr": cgit_clone_url(repo.clone_url) if repo.cgit else repo.clone_url,
             "repo_owner": repo.owner,
@@ -354,7 +392,12 @@ class Forgejo:
             self.existing(repo.owner)[repo.name.lower()] = interval
             print(f"ok    {full_name}")
         elif status != 409:
-            fail(f"{full_name} (HTTP {status}): {error_text(body)}")
+            message = error_text(body)
+            if "fsck error" in message:
+                message += "\n      the source has broken objects that your Forgejo's git refuses, see the README"
+            fail(f"{full_name} (HTTP {status}): {message}")
+            return False
+        return True
 
 
 def seconds(duration):
@@ -400,9 +443,12 @@ def load_config(path):
     except tomllib.TOMLDecodeError as error:
         die(f"bad config {path}: {error}")
 
-    interval = config.pop("interval", None)
+    interval = config.pop("interval", "24h")
     if not duration(interval):
         die(f'bad interval: {interval!r}, use hours, minutes and seconds like "24h" or "1h30m", or "0"')
+    rescan = config.pop("rescan", "24h")
+    if not duration(rescan):
+        die(f'bad rescan: {rescan!r}, use hours, minutes and seconds like "24h" or "1h30m", or "0"')
 
     servers = {}
     for server, section in config.items():
@@ -410,11 +456,11 @@ def load_config(path):
             die(f'[{server}] must only have a mirrors list, and the header needs quotes: ["git.example.com"]')
         url = server if "://" in server else f"https://{server}"
         servers[url.rstrip("/")] = [parse_item(item, interval) for item in section["mirrors"]]
-    return servers
+    return servers, rescan
 
 
-def load_token(url):
-    host = urlsplit(url).netloc
+@cache
+def find_token(host):
     try:
         result = subprocess.run(["secret-tool", "lookup", "service", NAME, "host", host], capture_output=True, text=True)
         if result.stdout.strip():
@@ -424,13 +470,66 @@ def load_token(url):
 
     path = TOKENS / host
     if not path.exists():
-        die(f"no token for {host}, run: secret-tool store --label='{NAME} {host}' service {NAME} host {host}")
+        return None
     if stat.S_IMODE(path.stat().st_mode) & 0o077:
         die(f"{path} is too open, run: chmod 600 {path}")
-    token = path.read_text().strip()
-    if not token:
+    if not (token := path.read_text().strip()):
         die(f"{path} is empty")
     return token
+
+
+def load_token(url):
+    host = urlsplit(url).netloc
+    if not (token := find_token(host)):
+        die(f"no token for {host}, run: {NAME} --token {host}")
+    return token
+
+
+def store_token(host):
+    host = split_url(host)[0].split("://", 1)[1]
+    try:
+        token = getpass.getpass(f"token for {host}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        sys.exit(1)
+    if not token:
+        die("no token given")
+    try:
+        result = subprocess.run(
+            ["secret-tool", "store", f"--label={NAME} {host}", "service", NAME, "host", host],
+            input=token, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"saved token for {host} in the keyring")
+            return
+        print(f"keyring failed: {result.stderr.strip()}", file=sys.stderr)
+    except FileNotFoundError:
+        pass
+    path = TOKENS / host
+    try:
+        TOKENS.mkdir(parents=True, exist_ok=True)
+        path.touch(0o600)
+        path.chmod(0o600)
+        path.write_text(f"{token}\n")
+    except OSError as error:
+        die(f"can't save token: {error}")
+    print(f"saved token for {host} in {path}")
+
+
+def load_scans():
+    try:
+        return json.loads(SCANS.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_scans(scans):
+    try:
+        SCANS.parent.mkdir(parents=True, exist_ok=True)
+        temporary = SCANS.with_suffix(".tmp")
+        temporary.write_text(json.dumps(scans, indent=1))
+        temporary.replace(SCANS)
+    except OSError as error:
+        fail(f"can't save {SCANS}: {error}")
 
 
 def main():
@@ -438,22 +537,49 @@ def main():
     parser.add_argument("config", nargs="?", type=Path, default=CONFIG)
     parser.add_argument("-n", "--dry-run", action="store_true")
     parser.add_argument("--avatars", action="store_true", help="re-upload avatars of existing orgs")
+    parser.add_argument("-f", "--force", action="store_true", help="check sources that were checked recently too")
+    parser.add_argument("--token", metavar="HOST", help="save a token for a server or source, e.g. github.com")
     args = parser.parse_args()
 
-    servers = load_config(args.config)
+    if args.token:
+        store_token(args.token)
+        return
+
+    servers, rescan = load_config(args.config)
+    rescan_seconds = seconds(rescan)
     tokens = {url: load_token(url) for url in servers}
+    scans, old_scans = {}, load_scans()
 
     for url, items in servers.items():
         print(f"== {url}")
         forgejo = Forgejo(url, tokens[url], args.dry_run, args.avatars)
+        recent = 0
         for item in items:
             origin, path, org, name = item.origin, item.path, item.org, item.name
             # owner/repo urls name their target, so existing mirrors never touch the source
             if len(path) == 2 and not args.avatars and forgejo.has(org or path[0], name or path[1]):
                 forgejo.sync_interval(org or path[0], name or path[1], item.interval)
                 continue
+            # sources checked within rescan are skipped, unless one of their mirrors went missing
+            key = f"{url} {origin}/{'/'.join(path)} forks={item.forks} org={org} name={name}"
+            scan = old_scans.get(key)
+            if (
+                scan and not (args.force or args.avatars) and time.time() - scan["time"] < rescan_seconds
+                and all(forgejo.has(*repo) for repo in scan["repos"])
+            ):
+                for repo in scan["repos"]:
+                    forgejo.sync_interval(*repo, item.interval)
+                scans[key] = scan
+                recent += 1
+                continue
+            if origin in limited:
+                continue
             try:
                 repos = fetch_repos(origin, path, item.forks)
+            except RateLimited as error:
+                limited.add(origin)
+                fail(f"{error}, skipping {origin} for the rest of this run")
+                continue
             except SourceError as error:
                 fail(str(error))
                 continue
@@ -462,6 +588,7 @@ def main():
             if name and len(repos) > 1:
                 fail(f"{origin}/{'/'.join(path)} has {len(repos)} repos, name only works on single repos")
                 continue
+            complete, mirrored = True, []
             for repo in repos:
                 if name:
                     repo = repo._replace(name=name)
@@ -469,9 +596,18 @@ def main():
                     repo = repo._replace(owner=org, avatar_url=repo.avatar_url if not repo.owner else "")
                 if not repo.owner:
                     fail(f"{repo.clone_url} has no owner, set org")
-                elif forgejo.sync_org(repo):
-                    forgejo.mirror(repo, item.interval)
+                    complete = False
+                elif forgejo.sync_org(repo) and forgejo.mirror(repo, item.interval):
+                    mirrored.append((repo.owner, repo.name))
+                else:
+                    complete = False
+            if complete:
+                scans[key] = {"time": time.time(), "repos": mirrored}
+        if recent:
+            print(f"skip  {recent} source{'s' * (recent > 1)} checked in the last {rescan}, pass --force to check them")
 
+    if not args.dry_run:
+        save_scans(scans)
     sys.exit(failed)
 
 

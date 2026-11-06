@@ -25,12 +25,29 @@ So limit who the token belongs to instead, and **don't use an admin's token**:
    ln -s "$PWD/declarative-forgejo-mirrors.py" ~/.local/bin/declarative-forgejo-mirrors
    ```
 4. Run `declarative-forgejo-mirrors` once, it copies `config.toml.example` to `~/.config/declarative-forgejo-mirrors/config.toml` and exits.
-5. Save the token in your keyring, this works with anything that provides Secret Service, e.g. KeePassXC, GNOME Keyring or KWallet:
+5. Save the token, it asks for it and stores it in your keyring, which works with anything that provides Secret Service, e.g. KeePassXC, GNOME Keyring or KWallet:
    ```sh
-   secret-tool store --label='declarative-forgejo-mirrors git.nnstdios.com' service declarative-forgejo-mirrors host git.nnstdios.com
+   declarative-forgejo-mirrors --token git.nnstdios.com
    ```
 
-Without a keyring, e.g. on a headless server, the token is read from `~/.local/share/declarative-forgejo-mirrors/tokens/<server>` instead, which has to be `chmod 600`.
+Without a keyring, e.g. on a headless server, it's saved to `~/.local/share/declarative-forgejo-mirrors/tokens/<host>` instead, which has to stay `chmod 600`.
+
+#### Source tokens
+
+Tokens for sources are optional, and are saved the same way under the source's host:
+
+```sh
+declarative-forgejo-mirrors --token github.com
+declarative-forgejo-mirrors --token gitlab.com
+declarative-forgejo-mirrors --token codeberg.org
+```
+
+They're sent with every API request to that host, which raises its rate limit, GitHub goes from 60 to 5000 requests per hour, and lets `forks = false` work on GitLab.\
+A read-only token is enough:
+
+- GitHub: a fine-grained token with "Public repositories" access and no permissions, under Settings → Developer settings → Personal access tokens.
+- GitLab: a personal access token with only the `read_api` scope.
+- Forgejo, e.g. Codeberg: a token with repository and user set to read.
 
 If that token leaks, the worst it can do is delete or tamper with the bot's own orgs and mirrors, and create junk orgs and repos.\
 It can't touch other users or their repos. Revoke it and re-run the script, which restores anything deleted.
@@ -41,6 +58,7 @@ Each header in the config is a server to mirror to, with its own token. Paste re
 
 ```toml
 interval = "24h"
+rescan = "24h"
 
 ["git.nnstdios.com"]
 mirrors = [
@@ -55,7 +73,10 @@ mirrors = [
 ```
 
 `name` renames the mirror and only works on URLs that resolve to a single repo.\
-`interval` sets how often Forgejo syncs the mirrors, at the top for all of them and on a mirror to override that, as hours, minutes and seconds like `24h` or `1h30m`, or `0` to never sync. Forgejo's default is `8h`, and it rejects anything below its minimum, `10m` by default.
+`interval` sets how often Forgejo syncs the mirrors, at the top for all of them and on a mirror to override that, as hours, minutes and seconds like `24h` or `1h30m`, or `0` to never sync. The default is `24h`, which also applies to existing mirrors, and Forgejo rejects anything below its minimum, `10m` by default.
+
+`rescan` is how long a source is left alone after it was checked, `24h` by default, or `0` to check every run.\
+Within it, only the intervals of its mirrors are updated, and it's checked anyway if one of its mirrors went missing.
 
 Plain git servers have no owners, so their repos need an `org`, which also works on any other URL to override the target org.\
 Avatars are only copied when `org` isn't set, or when the source has no owners, like a cgit logo, and the bot must be an owner of that org.
@@ -67,6 +88,7 @@ declarative-forgejo-mirrors
 
 Existing repos are skipped, so re-running only picks up new ones, and nothing is ever deleted.\
 Single repo URLs that are already mirrored are checked against your server only, without contacting the source.\
+Sources checked within `rescan` are skipped, pass `--force` to check them all.\
 Avatars are only uploaded when an org is created, pass `--avatars` to refresh them for existing orgs too.\
 To move servers, change the header, save a token for it and run it again.
 
@@ -77,10 +99,15 @@ To move servers, change the header, save a token for it and run it again.
 - An owner can't be mirrored if that name is already a Forgejo user, and the bot must be an owner of any org that already exists.
 - Same-named owners on different sources share an org, and if a repo name is taken the later one is skipped.
 - GitLab subgroups are flattened, `group/sub/repo` becomes `group/sub-repo`, so relative URLs won't work for those.
-- GitHub allows 60 unauthenticated requests per hour.
-- GitLab rate limits unauthenticated requests hard, especially for user URLs, so those can fail with HTTP 429 for a while. Group and repo URLs are more reliable.
-- `forks = false` doesn't work on GitLab, which doesn't reveal forks without a token.
-- `name` only applies when a mirror is created, while `interval` is also updated on existing mirrors, but removing it leaves the current one as is.
+- GitHub allows 60 unauthenticated requests per hour, and GitLab rate limits unauthenticated requests hard, especially for user URLs. Once a source rate limits, it's skipped for the rest of the run, save a token for it to avoid that.
+- `forks = false` doesn't work on GitLab without a token, since it doesn't reveal forks otherwise.
+- Some old repos have broken objects, like commits with invalid dates, and fail with `fsck error`. That's Forgejo's git refusing them, not this script. Allow them in Forgejo's `app.ini`, which also covers syncing them later:
+  ```ini
+  [git.config]
+  fetch.fsck.badDate = ignore
+  ```
+  Use the name after the object hash in the error, or `fetch.fsckObjects = false` to stop checking entirely.
+- `name` only applies when a mirror is created, while `interval` is also updated on existing mirrors.
 - Each repo has to finish cloning before the next starts, so a reverse proxy timeout can show up as `FAIL`.
 
 # ☦
