@@ -74,6 +74,10 @@ def fail(message):
     print(f"FAIL  {message}", file=sys.stderr)
 
 
+def warn(message):
+    print(f"WARN  {message}", file=sys.stderr)
+
+
 def error_text(body):
     try:
         return json.loads(body)["message"]
@@ -281,6 +285,7 @@ def split_url(url):
 
 class Forgejo:
     def __init__(self, url, token, dry_run, avatars):
+        self.url = url
         self.api = f"{url}/api/v1"
         self.token = token
         self.dry_run = dry_run
@@ -393,6 +398,11 @@ class Forgejo:
         if status == 201:
             self.existing(repo.owner)[repo.name.lower()] = interval
             print(f"ok    {full_name}")
+        elif status in (504, 524):
+            # the proxy gave up waiting, Forgejo usually keeps cloning, the next run checks it again
+            warn(f"{full_name} timed out at the reverse proxy (HTTP {status}), it's probably still cloning\n"
+                 f"      check that {self.url}/{full_name} exists, and raise the proxy's timeout to stop this")
+            return False
         elif status != 409:
             message = error_text(body)
             if "fsck error" in message:

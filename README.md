@@ -110,7 +110,7 @@ To move servers, change the header, save a token for it and run it again.
   ```
   Use the name after the object hash in the error, or `fetch.fsckObjects = false` to stop checking entirely.
 - `name` only applies when a mirror is created, while `interval` is also updated on existing mirrors.
-- Each repo has to finish cloning before the next starts, so a reverse proxy timeout can show up as `FAIL`.
+- Forgejo clones a repo before answering, so big ones can hit your reverse proxy's timeout. That's a `WARN`, not a `FAIL`, since Forgejo usually finishes the clone anyway. Check that the repo shows up, and raise the proxy timeout for `/api/v1/repos/migrate` (e.g. `proxy_read_timeout 30m;` in nginx/Angie) to stop it.
 
 # ☦
 
