@@ -3,6 +3,7 @@
 # forks = false     # skip forks everywhere, a mirror's forks = true overrides it
 # archived = false  # skip archived repos everywhere, a mirror's archived = true overrides it
 # exclude = []      # skip these repo names everywhere, on top of each mirror's own
+# actions = true    # run workflows everywhere, they're off by default, a mirror's actions = false overrides it
 
 ["git.nnstdios.com"]
 mirrors = [
@@ -14,5 +15,6 @@ mirrors = [
   # { url = "https://cgit.example.com", org = "my-mirrors" },  # every repo on a cgit index
   # { url = "https://github.com/owner/repo", name = "other-name" },  # rename the mirror
   # { url = "https://github.com/owner", interval = "1h" },  # override interval for these
+  # { url = "https://github.com/owner", actions = true },  # run workflows on these
   # { url = "https://github.com/owner", exclude = ["huge-repo", "old-*"] },  # everything except these
 ]

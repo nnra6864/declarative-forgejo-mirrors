@@ -60,6 +60,7 @@ class Mirror(NamedTuple):
     name: str | None
     interval: str | None
     exclude: tuple = ()
+    actions: bool = False
 
 
 class SourceError(Exception):
@@ -318,7 +319,7 @@ class Forgejo:
     def existing(self, org):
         org = org.lower()
         if org not in self.repos:
-            # lowercased name -> mirror interval, None for repos that aren't mirrors
+            # lowercased name -> (mirror interval, workflows on), None for repos that aren't mirrors
             self.repos[org] = {}
             page = 1
             while True:
@@ -331,7 +332,8 @@ class Forgejo:
                 if not (batch := json.loads(body)):
                     break
                 self.repos[org].update(
-                    (repo["name"].lower(), repo["mirror_interval"] if repo["mirror"] else None) for repo in batch
+                    (repo["name"].lower(), (repo["mirror_interval"], repo.get("has_actions")) if repo["mirror"] else None)
+                    for repo in batch
                 )
                 page += 1
         return self.repos[org]
@@ -339,20 +341,30 @@ class Forgejo:
     def has(self, owner, name):
         return name.lower() in self.existing(owner)
 
-    def sync_interval(self, owner, name, interval):
+    def sync_settings(self, owner, name, interval, actions):
         current = self.existing(owner)[name.lower()]
-        if not interval or current is None or seconds(current) == seconds(interval):
+        if current is None:
+            return
+        settings, changes = {}, []
+        if interval and current[0] is not None and seconds(current[0]) != seconds(interval):
+            settings["mirror_interval"] = interval
+            changes.append(f"interval {interval}")
+        if current[1] is not None and current[1] != actions:
+            settings["has_actions"] = actions
+            changes.append(f"workflows {'on' if actions else 'off'}")
+        if not settings:
             return
         full_name = f"{owner}/{name}"
+        what = ", ".join(changes)
         if self.dry_run:
-            print(f"would set {full_name} interval to {interval}")
+            print(f"would set {full_name} {what}")
             return
-        status, body = self.call("PATCH", f"/repos/{owner}/{name}", {"mirror_interval": interval})
+        status, body = self.call("PATCH", f"/repos/{owner}/{name}", settings)
         if status == 200:
-            self.existing(owner)[name.lower()] = interval
-            print(f"ok    {full_name} interval {interval}")
+            self.existing(owner)[name.lower()] = (settings.get("mirror_interval", current[0]), settings.get("has_actions", current[1]))
+            print(f"ok    {full_name} {what}")
         else:
-            fail(f"setting interval of {full_name} (HTTP {status}): {error_text(body)}")
+            fail(f"setting {what} on {full_name} (HTTP {status}): {error_text(body)}")
 
     def ensure_org(self, org, avatar_url):
         status, body = self.call("GET", f"/orgs/{org}")
@@ -390,13 +402,13 @@ class Forgejo:
             self.orgs[repo.owner] = self.ensure_org(repo.owner, repo.avatar_url)
         return self.orgs[repo.owner]
 
-    def mirror(self, repo, interval):
+    def mirror(self, repo, interval, actions):
         full_name = f"{repo.owner}/{repo.name}"
         if self.has(repo.owner, repo.name):
-            self.sync_interval(repo.owner, repo.name, interval)
+            self.sync_settings(repo.owner, repo.name, interval, actions)
             return True
         if self.dry_run:
-            self.existing(repo.owner)[repo.name.lower()] = interval
+            self.existing(repo.owner)[repo.name.lower()] = (interval, actions)
             print(f"would mirror {full_name}")
             return True
         status, body = self.call("POST", "/repos/migrate", {
@@ -412,8 +424,14 @@ class Forgejo:
             "private": False,
         }, MIGRATE_TIMEOUT)
         if status == 201:
-            self.existing(repo.owner)[repo.name.lower()] = interval
             print(f"ok    {full_name}")
+            # migrations can't turn workflows off, but their response is the new repo, so sync from its real state
+            try:
+                fresh = json.loads(body)
+            except ValueError:
+                fresh = {}
+            self.existing(repo.owner)[repo.name.lower()] = (fresh.get("mirror_interval", interval), fresh.get("has_actions"))
+            self.sync_settings(repo.owner, repo.name, interval, actions)
         elif status in (504, 524):
             # the proxy gave up waiting, Forgejo usually keeps cloning, the next run checks it again
             warn(f"{full_name} timed out at the reverse proxy (HTTP {status}), it's probably still cloning\n"
@@ -452,21 +470,21 @@ def patterns(value):
 def parse_item(item, defaults):
     if isinstance(item, str):
         item = {"url": item}
-    keys = {"url", "forks", "archived", "org", "name", "interval", "exclude"}
+    keys = {"url", "forks", "archived", "org", "name", "interval", "exclude", "actions"}
     if isinstance(item, dict) and isinstance(item.get("url"), str) and set(item) <= keys:
         forks, archived = item.get("forks", defaults["forks"]), item.get("archived", defaults["archived"])
         org, name, interval = item.get("org"), item.get("name"), item.get("interval", defaults["interval"])
-        exclude = item.get("exclude", [])
+        exclude, actions = item.get("exclude", []), item.get("actions", defaults["actions"])
         if (
-            isinstance(forks, bool) and isinstance(archived, bool) and segment(org) and segment(name) and duration(interval)
-            and patterns(exclude)
+            isinstance(forks, bool) and isinstance(archived, bool) and isinstance(actions, bool)
+            and segment(org) and segment(name) and duration(interval) and patterns(exclude)
         ):
             # global excludes add to the mirror's own
             exclude = tuple(dict.fromkeys([*defaults["exclude"], *exclude]))
-            return Mirror(*split_url(item["url"]), forks, archived, org, name, interval, exclude)
+            return Mirror(*split_url(item["url"]), forks, archived, org, name, interval, exclude, actions)
     die(
         f'bad mirror: {item!r}, use "url" or '
-        '{ url = "url", forks = false, archived = false, org = "org", name = "repo", interval = "24h", exclude = ["repo", "prefix-*"] }'
+        '{ url = "url", forks = false, archived = false, org = "org", name = "repo", interval = "24h", actions = false, exclude = ["repo", "prefix-*"] }'
     )
 
 
@@ -493,8 +511,13 @@ def load_config(path):
     rescan = config.pop("rescan", "24h")
     if not duration(rescan):
         die(f'bad rescan: {rescan!r}, use hours, minutes and seconds like "24h" or "1h30m", or "0"')
-    defaults = {"interval": interval, "forks": config.pop("forks", True), "archived": config.pop("archived", True)}
-    for key in ("forks", "archived"):
+    defaults = {
+        "interval": interval,
+        "forks": config.pop("forks", True),
+        "archived": config.pop("archived", True),
+        "actions": config.pop("actions", False),
+    }
+    for key in ("forks", "archived", "actions"):
         if not isinstance(defaults[key], bool):
             die(f"bad {key}: {defaults[key]!r}, use true or false")
     defaults["exclude"] = config.pop("exclude", [])
@@ -609,7 +632,7 @@ def main():
             origin, path, org, name = item.origin, item.path, item.org, item.name
             # owner/repo urls name their target, so existing mirrors never touch the source
             if len(path) == 2 and not args.avatars and forgejo.has(org or path[0], name or path[1]):
-                forgejo.sync_interval(org or path[0], name or path[1], item.interval)
+                forgejo.sync_settings(org or path[0], name or path[1], item.interval, item.actions)
                 continue
             # sources checked within rescan are skipped, unless one of their mirrors went missing
             key = f"{url} {origin}/{'/'.join(path)} forks={item.forks} archived={item.archived} org={org} name={name} exclude={sorted(item.exclude)}"
@@ -619,7 +642,7 @@ def main():
                 and all(forgejo.has(*repo) for repo in scan["repos"])
             ):
                 for repo in scan["repos"]:
-                    forgejo.sync_interval(*repo, item.interval)
+                    forgejo.sync_settings(*repo, item.interval, item.actions)
                 scans[key] = scan
                 recent += 1
                 continue
@@ -653,7 +676,7 @@ def main():
                 if not repo.owner:
                     fail(f"{repo.clone_url} has no owner, set org")
                     complete = False
-                elif forgejo.sync_org(repo) and forgejo.mirror(repo, item.interval):
+                elif forgejo.sync_org(repo) and forgejo.mirror(repo, item.interval, item.actions):
                     mirrored.append((repo.owner, repo.name))
                 else:
                     complete = False

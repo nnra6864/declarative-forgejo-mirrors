@@ -61,6 +61,7 @@ interval = "24h"
 rescan = "24h"
 forks = true
 archived = true
+actions = false
 exclude = []
 
 ["git.nnstdios.com"]
@@ -73,6 +74,7 @@ mirrors = [
   { url = "https://cgit.example.com", org = "my-mirrors" },
   { url = "https://github.com/owner/repo", name = "other-name" },
   { url = "https://github.com/owner", interval = "1h" },
+  { url = "https://github.com/owner", actions = true },
   { url = "https://github.com/owner", exclude = ["huge-repo", "old-*"] },
 ]
 ```
@@ -82,7 +84,8 @@ Set them at the top to change the default for every mirror, which a mirror's own
 The archived status itself isn't mirrored, mirrors of archived repos are regular mirrors on your server.\
 `name` renames the mirror and only works on URLs that resolve to a single repo.\
 `exclude` skips repos by their name on the source, ignoring case, `*` and `?` work as wildcards. It only stops new mirrors, ones that already exist are kept.\
-`interval` sets how often Forgejo syncs the mirrors, at the top for all of them and on a mirror to override that, as hours, minutes and seconds like `24h` or `1h30m`, or `0` to never sync. The default is `24h`, which also applies to existing mirrors, and Forgejo rejects anything below its minimum, `10m` by default.
+`interval` sets how often Forgejo syncs the mirrors, at the top for all of them and on a mirror to override that, as hours, minutes and seconds like `24h` or `1h30m`, or `0` to never sync. The default is `24h`, which also applies to existing mirrors, and Forgejo rejects anything below its minimum, `10m` by default.\
+`actions` decides whether mirrored workflows run, `false` by default so your runners never execute a mirrored repo's CI. Like `interval` it applies to existing mirrors too, so they get their workflows turned off on the next run, and `actions = true`, on everything or one mirror, turns them on.
 
 `rescan` is how long a source is left alone after it was checked, `24h` by default, or `0` to check every run.\
 Within it, only the intervals of its mirrors are updated, and it's checked anyway if one of its mirrors went missing.
@@ -116,7 +119,7 @@ To move servers, change the header, save a token for it and run it again.
   fetch.fsck.badDate = ignore
   ```
   Use the name after the object hash in the error, or `fetch.fsckObjects = false` to stop checking entirely.
-- `name` only applies when a mirror is created, while `interval` is also updated on existing mirrors.
+- `name` only applies when a mirror is created, while `interval` and `actions` are also updated on existing mirrors.
 - Forgejo clones a repo before answering, so big ones can hit your reverse proxy's timeout. That's a `WARN`, not a `FAIL`, since Forgejo usually finishes the clone anyway. Check that the repo shows up, and raise the proxy timeout for `/api/v1/repos/migrate` (e.g. `proxy_read_timeout 30m;` in nginx/Angie) to stop it.
 
 # ☦
